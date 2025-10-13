@@ -17,6 +17,11 @@
 #include <linux/types.h>
 #include <linux/wait.h>
 #include <linux/spinlock.h>
+#include <linux/mod_devicetable.h>
+#include <linux/property.h>
+#include <linux/platform_device.h>
+#include <linux/of_device.h>
+
 #include "gaussian_random.h"
 #include "simtemp.h"
 
@@ -77,7 +82,6 @@ static struct simtemp_sample current_sample={.timestamp_ns = 0, .temp_mC = TEMP_
 static struct simtemp_flags e_flags={.counter = 0, .alert = 0, .l_error = E_NO_ERR}; 
 
 //Prototypes
-
 static int __init nxp_simtemp_init(void);
 static void __exit nxp_simtemp_exit(void);
 
@@ -103,6 +107,11 @@ struct kobj_attribute attr_threshold_mC = __ATTR(threshold_mC, 0660, threshold_m
 struct kobj_attribute attr_mode= __ATTR(mode, 0660, mode_show,mode_store);
 struct kobj_attribute attr_stats = __ATTR(stats, 0440, stats_show,stats_store);
 
+// Probe and remove functions
+static int nxp_simtemp_probe(struct platform_device *pdev);
+static int nxp_simtemp_remove(struct platform_device *pdev);
+
+
 static struct attribute *sim_temp_attrs[] = {
 	&attr_sampling_us.attr,
 	&attr_threshold_mC.attr,
@@ -126,8 +135,90 @@ static struct file_operations fops =
 	.release	= nxp_simtemp_release,
 };
 
-//Function called when we read the sysfs file
+static struct of_device_id nxp_simtemp_ids[]= {
+	{
+		.compatible = "nxp,simtemp",
+	}, {/* sentinel */}
+};
 
+MODULE_DEVICE_TABLE(of,nxp_simtemp_ids);
+
+static struct platform_driver nxp_simtemp_driver = {
+	.probe = nxp_simtemp_probe,
+	.remove = nxp_simtemp_remove,
+	.driver = {
+		.name = "nxp_simtemp_driver",
+		.of_match_table = nxp_simtemp_ids,
+	},
+};
+
+//Function called when loading the driver
+static int nxp_simtemp_probe(struct platform_device *pdev)
+{
+	struct device *dev = &pdev->dev;
+	struct device_node *np = dev->of_node;
+	
+	int sampling_us_dt, threshold_mC_dt, ret = 0;
+	
+	printk("nxp_simtemp: Probe function\n");
+	
+	if(!device_property_present(dev,"sampling-ms"))
+	{
+		printk("nxp_simtemp: Device property sampling-ms not found\n");
+		return -1;
+	}
+	if(!device_property_present(dev,"threshold-mc"))
+	{
+		printk("nxp_simtemp: Device property threshold-mc not found\n");
+		return -1;
+	}
+	
+	ret = of_property_read_u32(np, "sampling-ms", &sampling_us_dt);
+	if(ret)
+	{
+		printk("nxp_simtemp: Could not read samplings-ms from DT\n");
+		return ret;
+	}
+	
+	if(sampling_us_dt > TIME_MAX_us || sampling_us_dt < TIME_MIN_us)
+	{
+		printk("nxp_simtemp: samplings-ms from DT out of range\n");
+		return -EINVAL;
+	}
+	
+	sampling_us = sampling_us_dt;
+	
+	printk("nxp_simtemp: from DT sampling_us = %u\n",sampling_us);
+	
+	ret = of_property_read_s32(np, "threshold-mc", &threshold_mC_dt);
+	if(ret)
+	{
+		printk("nxp_simtemp: Could not read threshold-mc from DT\n");
+		return ret;
+	}
+	if(threshold_mC_dt > TEMP_MAX || threshold_mC_dt < TEMP_MIN)
+	{
+		printk("nxp_simtemp: threshold-mc from DT out of range\n");
+		return -EINVAL;
+	}
+	
+	threshold_mC = threshold_mC_dt;
+	
+	printk("nxp_simtemp: from DT threshold_mC = %d\n",threshold_mC);
+	
+	return 0;
+}
+
+//Function called on unloading the driver
+
+static int nxp_simtemp_remove(struct platform_device *pdev)
+{
+	printk("nxp_simtemp: Remove function\n");
+	return 0;
+}
+
+
+//Function called when we read the sysfs file
 static ssize_t sampling_us_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
 {
 	pr_info("nxp_simtemp: sampling_us - Read\n");
@@ -375,6 +466,13 @@ static int __init nxp_simtemp_init(void)
 {
 	unsigned long flags;
 	
+	// Load the driver
+	if(platform_driver_register(&nxp_simtemp_driver))
+	{
+		printk("nxp_simtemp: Error.Could not load the driver\n");
+		return -1;
+	}
+	
 	// Init spinlocks
 	spin_lock_init(&fifo_lock);
 	spin_lock_init(&flags_lock);
@@ -503,6 +601,7 @@ static void __exit nxp_simtemp_exit(void)
 	class_destroy(dev_class);
 	cdev_del(&k_cdev);
 	unregister_chrdev_region(dev,1);
+	platform_driver_unregister(&nxp_simtemp_driver);
 	pr_info("nxp_simtemp: Device Driver Remove Done\n");
 }
 
