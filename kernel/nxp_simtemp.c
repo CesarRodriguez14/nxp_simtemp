@@ -50,7 +50,7 @@
 const char * modes[] ={"normal","noisy","ramp"};
 
 //Kernel space variables
-volatile __u32 sampling_us = 100000; //100 ms
+volatile __u32 sampling_us = 150000; //150 ms
 volatile __s32 threshold_mC = 20000; //20 °C
 volatile __u8 mode = MODE_RMP;
 volatile __u8  flags = 0;
@@ -160,51 +160,53 @@ static int nxp_simtemp_probe(struct platform_device *pdev)
 	
 	int sampling_us_dt, threshold_mC_dt, ret = 0;
 	
-	printk("nxp_simtemp: Probe function\n");
+	pr_info("nxp_simtemp: Probe function\n");
 	
 	if(!device_property_present(dev,"sampling-ms"))
 	{
-		printk("nxp_simtemp: Device property sampling-ms not found\n");
+		pr_info("nxp_simtemp: Device property sampling-ms not found\n");
 		return -1;
 	}
-	if(!device_property_present(dev,"threshold-mc"))
+	if(!device_property_present(dev,"threshold-mC"))
 	{
-		printk("nxp_simtemp: Device property threshold-mc not found\n");
+		pr_info("nxp_simtemp: Device property threshold-mC not found\n");
 		return -1;
 	}
 	
 	ret = of_property_read_u32(np, "sampling-ms", &sampling_us_dt);
 	if(ret)
 	{
-		printk("nxp_simtemp: Could not read samplings-ms from DT\n");
+		pr_info("nxp_simtemp: Could not read samplings-ms from DT\n");
 		return ret;
 	}
 	
+	sampling_us_dt = 1000 * sampling_us_dt;
+	
 	if(sampling_us_dt > TIME_MAX_us || sampling_us_dt < TIME_MIN_us)
 	{
-		printk("nxp_simtemp: samplings-ms from DT out of range\n");
+		pr_info("nxp_simtemp: samplings-ms from DT out of range\n");
 		return -EINVAL;
 	}
 	
 	sampling_us = sampling_us_dt;
 	
-	printk("nxp_simtemp: from DT sampling_us = %u\n",sampling_us);
+	pr_info("nxp_simtemp: from DT sampling_us = %u\n",sampling_us);
 	
-	ret = of_property_read_s32(np, "threshold-mc", &threshold_mC_dt);
+	ret = of_property_read_s32(np, "threshold-mC", &threshold_mC_dt);
 	if(ret)
 	{
-		printk("nxp_simtemp: Could not read threshold-mc from DT\n");
+		pr_info("nxp_simtemp: Could not read threshold-mC from DT\n");
 		return ret;
 	}
 	if(threshold_mC_dt > TEMP_MAX || threshold_mC_dt < TEMP_MIN)
 	{
-		printk("nxp_simtemp: threshold-mc from DT out of range\n");
+		pr_info("nxp_simtemp: threshold-mc from DT out of range\n");
 		return -EINVAL;
 	}
 	
 	threshold_mC = threshold_mC_dt;
 	
-	printk("nxp_simtemp: from DT threshold_mC = %d\n",threshold_mC);
+	pr_info("nxp_simtemp: from DT threshold_mC = %d\n",threshold_mC);
 	
 	return 0;
 }
@@ -213,7 +215,7 @@ static int nxp_simtemp_probe(struct platform_device *pdev)
 
 static int nxp_simtemp_remove(struct platform_device *pdev)
 {
-	printk("nxp_simtemp: Remove function\n");
+	pr_info("nxp_simtemp: Remove function\n");
 	return 0;
 }
 
@@ -469,7 +471,7 @@ static int __init nxp_simtemp_init(void)
 	// Load the driver
 	if(platform_driver_register(&nxp_simtemp_driver))
 	{
-		printk("nxp_simtemp: Error.Could not load the driver\n");
+		pr_info("nxp_simtemp: Error.Could not load the driver\n");
 		return -1;
 	}
 	
@@ -609,6 +611,6 @@ module_init(nxp_simtemp_init);
 module_exit(nxp_simtemp_exit);
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("LASEC TECHNOLOGIES SYSTEMS");
-MODULE_DESCRIPTION("Simple Linux device driver (sysfs)");
+MODULE_AUTHOR("Cesar Rodriguez Flores");
+MODULE_DESCRIPTION("Linux device driver that simulates a temperature sensor");
 MODULE_VERSION("0.1");

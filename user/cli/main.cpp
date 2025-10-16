@@ -45,11 +45,78 @@ void getDate(char * date,uint64_t ns)
 	sprintf(date,"%s.%03ldZ",buffer,nanoseconds/1000000);
 }
 
+int showDefaultSimParameters()
+{
+	double s_s_ms,s_s_us = 0;
+	std::string s_mode;
+	std::string s_t_mC;
+	
+	char buffer[10];
+	ssize_t bytes_read = 0;
+	int fd_s_us, fd_mode, fd_t_mC = 0;
+	
+	fd_s_us = open("/sys/kernel/simtemp/sampling_us",O_RDONLY);
+	if(fd_s_us == -1)
+	{
+		perror("open sampling_us");
+		return -1;
+	}
+	bytes_read = read(fd_s_us,buffer,sizeof(buffer)-1);
+	close(fd_s_us);
+	if(bytes_read < 0)
+	{
+		perror("read sampling_us");
+		return -1;
+	}
+	buffer[bytes_read]='\0';
+	s_s_us = (double)(std::stod(buffer));
+	s_s_ms = s_s_us / 1000;
+	
+	fd_mode = open("/sys/kernel/simtemp/mode",O_RDONLY);
+	if(fd_mode == -1)
+	{
+		perror("open mode");
+		return -1;
+	}
+	bytes_read = read(fd_mode,buffer,sizeof(buffer)-1);
+	close(fd_mode);
+	if(bytes_read < 0)
+	{
+		perror("read mode");
+		return -1;
+	}
+	buffer[bytes_read]='\0';
+	s_mode = buffer;
+	
+	fd_t_mC = open("/sys/kernel/simtemp/threshold_mC",O_RDONLY);
+	if(fd_t_mC == -1)
+	{
+		perror("open threshold_mC");
+		return -1;
+	}
+	bytes_read = read(fd_t_mC,buffer,sizeof(buffer)-1);
+	close(fd_t_mC);
+	if(bytes_read < 0)
+	{
+		perror("read threshold_mC");
+		return -1;
+	}
+	buffer[bytes_read-1]='\0';
+	s_t_mC = buffer;
+	
+	cout << "Sampling rate: " << s_s_ms << "ms | " << s_s_us << "us"<< endl;
+	cout << "Mode: " << s_mode ;
+	cout << "Temperature threshold: " << s_t_mC <<" m °C" << endl;
+	
+	return 0;	
+}
+
 int setSimParameters(const uint32_t s_us, const uint8_t mode, const uint32_t t_mC)
 {
 	char buffer[10];
 	ssize_t bytes_written = 0;
 	int fd_s_us, fd_mode, fd_t_mC = 0;
+	
 	fd_s_us = open("/sys/kernel/simtemp/sampling_us",O_WRONLY);
 	if(fd_s_us == -1)
 	{
@@ -57,10 +124,31 @@ int setSimParameters(const uint32_t s_us, const uint8_t mode, const uint32_t t_m
 		return -1;
 	}
 	
+	std::snprintf(buffer,sizeof(buffer),"%u",s_us);
+	
+	bytes_written = write(fd_s_us,buffer,strlen(buffer));
+	close(fd_s_us);
+	
+	if(bytes_written == -EINVAL)
+	{
+		perror("write sampling_us");
+		return -1;
+	}
+	
 	fd_mode = open("/sys/kernel/simtemp/mode",O_WRONLY);
 	if(fd_mode == -1)
 	{
 		perror("open mode");
+		return -1;
+	}
+	std::snprintf(buffer,sizeof(buffer),"%d",mode);
+	
+	bytes_written = write(fd_mode,buffer,strlen(buffer));
+	close(fd_mode);
+	
+	if(bytes_written == -EINVAL)
+	{
+		perror("write mode");
 		return -1;
 	}
 	
@@ -71,39 +159,16 @@ int setSimParameters(const uint32_t s_us, const uint8_t mode, const uint32_t t_m
 		return -1;
 	}
 	
-	std::snprintf(buffer,sizeof(buffer),"%u",s_us);
-	
-	bytes_written = write(fd_s_us,buffer,strlen(buffer));
-	
-	if(bytes_written == -EINVAL)
-	{
-		perror("write sampling_us");
-		return -1;
-	}
-	
-	std::snprintf(buffer,sizeof(buffer),"%d",mode);
-	
-	bytes_written = write(fd_mode,buffer,strlen(buffer));
-	
-	if(bytes_written == -EINVAL)
-	{
-		perror("write mode");
-		return -1;
-	}
-	
 	std::snprintf(buffer,sizeof(buffer),"%d",t_mC);
 	
 	bytes_written = write(fd_t_mC,buffer,strlen(buffer));
+	close(fd_t_mC);
 	
 	if(bytes_written == -EINVAL)
 	{
 		perror("write threshold_mC");
 		return -1;
 	}
-	
-	close(fd_s_us);
-	close(fd_mode);
-	close(fd_t_mC);
 	
 	return 0;
 }
@@ -212,6 +277,7 @@ int main(int argc, char* argv[])
 	char flag = 0;
 	int i=1;
 	bool valid_arguments = true;
+	bool poll_dev = true;
 	uint32_t sampling_us = 100000;
 	double sampling_ms = 100;
 	int32_t threshold_mC = 20000;
@@ -283,49 +349,62 @@ int main(int argc, char* argv[])
 			}
 			i++;
 		}
-	}
-	if(valid_arguments)
-	{
-		cout<<"All arguments are valid"<<endl;
-		cout << "Sampling rate set: " << sampling_ms << "ms | " << sampling_us << "us"<< endl;
-		cout << "Mode set: " << modes[mode] << endl;
-		cout << "Temperature threshold set: " << threshold_mC <<" m °C"<<endl;
 		
-		if (setSimParameters(sampling_us,mode,threshold_mC) == 0)
+		poll_dev = valid_arguments;
+		
+		if(poll_dev)
 		{
-			fd = open("/dev/simtemp",O_RDONLY);
-			if(fd<0)
+			cout<<"All arguments are valid"<<endl;
+			cout << "Sampling rate set: " << sampling_ms << "ms | " << sampling_us << "us"<< endl;
+			cout << "Mode set: " << modes[mode] << endl;
+			cout << "Temperature threshold set: " << threshold_mC <<" m °C"<<endl;
+			if (setSimParameters(sampling_us,mode,threshold_mC) != 0)
 			{
-				cout << "Cannot open device file... "<< errno <<" (" << strerror(errno) << ") " << endl;
-				return 1;
+				poll_dev = false;
 			}
-			pfd.fd = fd;
-			pfd.events = POLLIN;
-			while(1)
-			{
-				int ret = poll(&pfd,1,5000);
-				if(ret == -1)
-				{
-					perror("Error during poll");
-					break;
-				}
-				else if(ret == 0)
-				{
-					cout << "Timeout waiting for data." << endl;
-					continue;
-				}
-				
-				if(pfd.revents & POLLIN)
-				{
-					if (read(fd,&current_sample,sizeof(current_sample)) == sizeof(current_sample))
-					{
-						getDate(date,current_sample.timestamp_ns);
-						
-						cout << date << " temp=" << std::fixed << std::setprecision(1) <<(double)current_sample.temp_mC/1000 << "C alert=" << (current_sample.flags & FLAG_THRESHOLD_CROSSED ? "1":"0") << endl;
-					}
-				}
-			} 
 		}
+	}
+	else
+	{
+		if(showDefaultSimParameters() != 0)
+		{
+			poll_dev = false;
+		}
+	}
+	if(poll_dev)
+	{
+		fd = open("/dev/simtemp",O_RDONLY);
+		if(fd<0)
+		{
+			cout << "Cannot open device file... "<< errno <<" (" << strerror(errno) << ") " << endl;
+			return 1;
+		}
+		pfd.fd = fd;
+		pfd.events = POLLIN;
+		while(1)
+		{
+			int ret = poll(&pfd,1,5000);
+			if(ret == -1)
+			{
+				perror("Error during poll");
+				break;
+			}
+			else if(ret == 0)
+			{
+				cout << "Timeout waiting for data." << endl;
+				continue;
+			}
+			
+			if(pfd.revents & POLLIN)
+			{
+				if (read(fd,&current_sample,sizeof(current_sample)) == sizeof(current_sample))
+				{
+					getDate(date,current_sample.timestamp_ns);
+					
+					cout << date << " temp=" << std::fixed << std::setprecision(1) <<(double)current_sample.temp_mC/1000 << "C alert=" << (current_sample.flags & FLAG_THRESHOLD_CROSSED ? "1":"0") << endl;
+				}
+			}
+		} 
 	}
 	return 0;
 }
