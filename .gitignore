@@ -3,3 +3,5 @@
 *.order
 *.symvers
 *cli_nxp_simtemp
+/kernel/.*
+*.mod.c
