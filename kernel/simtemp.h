@@ -14,6 +14,7 @@
 #define E_DV_CREATE		18
 #define E_KO_CREATE		19
 #define E_SYS_CREATE	20
+#define E_OR_TH			21
 
 const char * sim_errors[] = { "NO_ERROR",
 	"EINVAL_sampling_us",
@@ -25,7 +26,8 @@ const char * sim_errors[] = { "NO_ERROR",
 	"CREATE_class",
 	"CREATE_device",
 	"CREATE_kobject",
-	"CREATE_kobject"
+	"CREATE sysfs group",
+	"OUTOFRANGE_threshold_mC",
 };
 	
 	

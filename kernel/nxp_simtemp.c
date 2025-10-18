@@ -50,11 +50,11 @@
 const char * modes[] ={"normal","noisy","ramp"};
 
 //Kernel space variables
-volatile __u32 sampling_us = 150000; //150 ms
-volatile __s32 threshold_mC = 20000; //20 °C
-volatile __u8 mode = MODE_RMP;
-volatile __u8  flags = 0;
-volatile __u32 TEMP_STD_mC = 100; // Temperature standard deviation 0.1 °C
+static __u32 sampling_us = 150000; //150 ms
+static __s32 threshold_mC = 20000; //20 °C
+static __u8 mode = MODE_RMP;
+static __u8  flags = 0;
+static __u32 TEMP_STD_mC = 100; // Temperature standard deviation 0.1 °C
 
 //Statically allocated FIFO and waitqueue
 static DEFINE_KFIFO(CBuffer,struct simtemp_sample,FIFO_SIZE);
@@ -224,7 +224,7 @@ static int nxp_simtemp_remove(struct platform_device *pdev)
 static ssize_t sampling_us_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
 {
 	pr_info("nxp_simtemp: sampling_us - Read\n");
-	return sprintf(buf,"%u\n",sampling_us);
+	return sprintf(buf,"%u\n",READ_ONCE(sampling_us));
 }
 
 static ssize_t sampling_us_store(struct kobject *kobj, struct kobj_attribute *attr, const char *buf, size_t count)
@@ -267,7 +267,7 @@ static ssize_t sampling_us_store(struct kobject *kobj, struct kobj_attribute *at
 static ssize_t threshold_mC_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
 {
 	pr_info("nxp_simtemp: threshold_mC - Read\n");
-	return sprintf(buf,"%d\n",threshold_mC);
+	return sprintf(buf,"%d\n",READ_ONCE(threshold_mC));
 }
 
 static ssize_t threshold_mC_store(struct kobject *kobj, struct kobj_attribute *attr, const char *buf, size_t count)
@@ -284,7 +284,7 @@ static ssize_t threshold_mC_store(struct kobject *kobj, struct kobj_attribute *a
 		if(threshold_mC_temp > TEMP_MAX || threshold_mC_temp < TEMP_MIN)
 		{
 			spin_lock_irqsave(&flags_lock,flags);
-			e_flags.l_error = E_OR_S_US;
+			e_flags.l_error = E_OR_TH;
 			spin_unlock_irqrestore(&flags_lock,flags);
 			return -EINVAL;
 		}
@@ -304,8 +304,16 @@ static ssize_t threshold_mC_store(struct kobject *kobj, struct kobj_attribute *a
 
 static ssize_t mode_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
 {
+	u8 local_mode = READ_ONCE(mode);
 	pr_info("nxp_simtemp: mode - Read\n");
-	return sprintf(buf,"%s\n",modes[mode]);
+	if (local_mode == MODE_NRM || local_mode == MODE_NSY || local_mode == MODE_RMP)
+	{
+		return sprintf(buf,"%s\n",modes[local_mode]);
+	}
+	else
+	{
+		return sprintf(buf,"unknown\n");	
+	}
 }
 
 static ssize_t mode_store(struct kobject *kobj, struct kobj_attribute *attr, const char *buf, size_t count)
@@ -421,10 +429,13 @@ static enum hrtimer_restart timer_callback(struct hrtimer *timer)
 {
 	struct simtemp_sample old_value;
 	unsigned long flags;
+	u8 local_mode = READ_ONCE(mode);
+	s32 threshold_mC_local = READ_ONCE(threshold_mC);
 	
-	if(mode == MODE_NRM || mode == MODE_NSY)
+	
+	if(local_mode == MODE_NRM || local_mode == MODE_NSY)
 	{
-		current_sample.temp_mC = gaussian_s32_clt(TEMP_MEAN_mC,TEMP_STD_mC);
+		current_sample.temp_mC = gaussian_s32_clt(TEMP_MEAN_mC, READ_ONCE(TEMP_STD_mC));
 	}
 	else
 	{
@@ -437,7 +448,7 @@ static enum hrtimer_restart timer_callback(struct hrtimer *timer)
 	e_flags.counter += 1;
 	spin_unlock_irqrestore(&flags_lock,flags);
 	
-	if (current_sample.temp_mC > threshold_mC)
+	if (current_sample.temp_mC > threshold_mC_local)
 	{
 		spin_lock_irqsave(&flags_lock,flags);
 		e_flags.alert += 1;
