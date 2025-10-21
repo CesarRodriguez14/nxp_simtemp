@@ -53,7 +53,6 @@ const char * modes[] ={"normal","noisy","ramp"};
 static __u32 sampling_us = 150000; //150 ms
 static __s32 threshold_mC = 20000; //20 °C
 static __u8 mode = MODE_RMP;
-static __u8  flags = 0;
 static __u32 TEMP_STD_mC = 100; // Temperature standard deviation 0.1 °C
 
 //Statically allocated FIFO and waitqueue
@@ -394,10 +393,18 @@ static ssize_t nxp_simtemp_read(struct file *file, char __user *buf, size_t len,
 	unsigned long flags;
 	
 	spin_lock_irqsave(&fifo_lock,flags);
-	kfifo_out(&CBuffer,&current_sample,1);
+	if (kfifo_out(&CBuffer, &current_sample, 1) != 1)
+	{
+		pr_warn("nxp_simtemp: Failed to read from FIFO\n");
+	}
+
 	spin_unlock_irqrestore(&fifo_lock,flags);
 	
-	copy_to_user((void __user *)buf,&current_sample,sizeof(current_sample));
+	if (copy_to_user((void __user *)buf, &current_sample, sizeof(current_sample)))
+	{
+		pr_warn("nxp_simtemp: Failed to copy data to user space\n");
+		return -EFAULT;
+	}
 	return sizeof(current_sample);
 }
 
@@ -461,7 +468,11 @@ static enum hrtimer_restart timer_callback(struct hrtimer *timer)
 	
 	if(kfifo_is_full(&CBuffer))
 	{
-		kfifo_out(&CBuffer,&old_value,1);
+		if (kfifo_out(&CBuffer, &old_value, 1) != 1) 
+		{
+			pr_warn("nxp_simtemp: Failed to remove old value from FIFO\n");
+		}
+
 		//pr_info("nxp_simtemp: CBuffer full, oldest value %d dropped\n", old_value);
 	}
 	kfifo_in(&CBuffer,&current_sample,1);
@@ -603,7 +614,11 @@ static void __exit nxp_simtemp_exit(void)
 	spin_lock_irqsave(&fifo_lock,flags);
 	while(!kfifo_is_empty(&CBuffer))
 	{
-		kfifo_out(&CBuffer,&val,1);
+		if (kfifo_out(&CBuffer, &val, 1) != 1)
+		{
+			pr_warn("nxp_simtemp: Failed to drain FIFO at exit\n");
+		}
+
 		pr_info("nxp_simtemp: %d Drained %d\n",i++,val.temp_mC);
 	}
 	spin_unlock_irqrestore(&fifo_lock,flags);
