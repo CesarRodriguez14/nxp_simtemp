@@ -1,0 +1,29 @@
+From 01cb3ec753a875f77c88b495cf2095b6687690f0 Mon Sep 17 00:00:00 2001
+From: CesarRodriguez14 <cesrodflo14@hotmail.com>
+Date: Wed, 22 Oct 2025 08:26:09 -0500
+Subject: [PATCH] Add simtemp node to DT
+
+---
+ src/vendor/qcom/proprietary/devicetree/qcom/scuba.dtsi | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/src/vendor/qcom/proprietary/devicetree/qcom/scuba.dtsi b/src/vendor/qcom/proprietary/devicetree/qcom/scuba.dtsi
+index 50f46e3..2803493 100755
+--- a/src/vendor/qcom/proprietary/devicetree/qcom/scuba.dtsi
++++ b/src/vendor/qcom/proprietary/devicetree/qcom/scuba.dtsi
+@@ -2570,3 +2570,12 @@
+ 		};
+ 	};
+ };
++
++&soc {
++	simtemp0: simtemp {
++		compatible = "nxp,simtemp";
++		sampling-ms = <100>;
++		threshold-mC = <45000>;
++		status = "okay";
++	};
++};
+-- 
+2.7.4
+

@@ -1,0 +1,4 @@
+config NXP_SIMTEMP_DRIVER
+	tristate "NXP-simtemp Driver"
+	help
+		NXP-simtemp Driver
