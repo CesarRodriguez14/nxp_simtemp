@@ -64,3 +64,7 @@ The simulation parameters can be modified in the `run_demo.sh` in:
     mode=d
     threshold_mC=20000
 These are the default parameters of `run_demo.sh`
+
+[Git repo](https://github.com/CesarRodriguez14/nxp_simtemp)
+[Implementation on SC206EM video](https://drive.google.com/file/d/1BO6WuC2X8WO_XnSy8ki_j8wXlz1zx76T/view?usp=drive_link)
+The following step would be the GUI development with Qt5 and test on Smart EVB-G5 kit.
