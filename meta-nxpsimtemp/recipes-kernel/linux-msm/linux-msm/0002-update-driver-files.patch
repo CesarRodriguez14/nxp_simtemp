@@ -1,0 +1,472 @@
+From 80cdd578b4665c087b9058b5b6fc5a36ae353fc3 Mon Sep 17 00:00:00 2001
+From: CesarRodriguez14 <cesrodflo14@hotmail.com>
+Date: Mon, 13 Oct 2025 23:44:17 -0500
+Subject: [PATCH] update-driver-files
+
+---
+ drivers/char/nxp_simtemp_driver/nxp_simtemp.c | 217 +++++++++++++++++++++++---
+ drivers/char/nxp_simtemp_driver/simtemp.h     |  36 +++++
+ 2 files changed, 231 insertions(+), 22 deletions(-)
+
+diff --git a/drivers/char/nxp_simtemp_driver/nxp_simtemp.c b/drivers/char/nxp_simtemp_driver/nxp_simtemp.c
+index 0d84fc3..7da2a7d 100644
+--- a/drivers/char/nxp_simtemp_driver/nxp_simtemp.c
++++ b/drivers/char/nxp_simtemp_driver/nxp_simtemp.c
+@@ -16,6 +16,12 @@
+ #include <linux/err.h>
+ #include <linux/types.h>
+ #include <linux/wait.h>
++#include <linux/spinlock.h>
++#include <linux/mod_devicetable.h>
++#include <linux/property.h>
++#include <linux/platform_device.h>
++#include <linux/of_device.h>
++
+ #include "gaussian_random.h"
+ #include "simtemp.h"
+ 
+@@ -61,6 +67,7 @@ static DEFINE_MUTEX(mode_lock);
+ 
+ //Define spinlock
+ static DEFINE_SPINLOCK(fifo_lock);
++static DEFINE_SPINLOCK(flags_lock);
+ 
+ //Hrtimer variables
+ static struct hrtimer my_timer;
+@@ -72,9 +79,9 @@ static struct cdev k_cdev;
+ struct kobject *kobj_ref;
+ 
+ static struct simtemp_sample current_sample={.timestamp_ns = 0, .temp_mC = TEMP_MEAN_mC, .flags = 0};
++static struct simtemp_flags e_flags={.counter = 0, .alert = 0, .l_error = E_NO_ERR}; 
+ 
+ //Prototypes
+-
+ static int __init nxp_simtemp_init(void);
+ static void __exit nxp_simtemp_exit(void);
+ 
+@@ -92,18 +99,24 @@ static ssize_t threshold_mC_show(struct kobject *kobj, struct kobj_attribute *at
+ static ssize_t threshold_mC_store(struct kobject *kobj, struct kobj_attribute *attr, const char *buf, size_t count);
+ static ssize_t mode_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf);
+ static ssize_t mode_store(struct kobject *kobj, struct kobj_attribute *attr, const char *buf, size_t count);
+-static ssize_t flags_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf);
+-static ssize_t flags_store(struct kobject *kobj, struct kobj_attribute *attr, const char *buf, size_t count);
++static ssize_t stats_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf);
++static ssize_t stats_store(struct kobject *kobj, struct kobj_attribute *attr, const char *buf, size_t count);
+ 
+ struct kobj_attribute attr_sampling_us = __ATTR(sampling_us, 0660, sampling_us_show,sampling_us_store);
+ struct kobj_attribute attr_threshold_mC = __ATTR(threshold_mC, 0660, threshold_mC_show,threshold_mC_store);
+ struct kobj_attribute attr_mode= __ATTR(mode, 0660, mode_show,mode_store);
+-struct kobj_attribute attr_flags = __ATTR(flags, 0660, flags_show,flags_store);
++struct kobj_attribute attr_stats = __ATTR(stats, 0440, stats_show,stats_store);
++
++// Probe and remove functions
++static int nxp_simtemp_probe(struct platform_device *pdev);
++static int nxp_simtemp_remove(struct platform_device *pdev);
++
+ 
+ static struct attribute *sim_temp_attrs[] = {
+ 	&attr_sampling_us.attr,
+ 	&attr_threshold_mC.attr,
+ 	&attr_mode.attr,
++	&attr_stats.attr,
+ 	NULL,
+ };
+ 
+@@ -122,8 +135,90 @@ static struct file_operations fops =
+ 	.release	= nxp_simtemp_release,
+ };
+ 
+-//Function called when we read the sysfs file
++static struct of_device_id nxp_simtemp_ids[]= {
++	{
++		.compatible = "nxp,simtemp",
++	}, {/* sentinel */}
++};
++
++MODULE_DEVICE_TABLE(of,nxp_simtemp_ids);
++
++static struct platform_driver nxp_simtemp_driver = {
++	.probe = nxp_simtemp_probe,
++	.remove = nxp_simtemp_remove,
++	.driver = {
++		.name = "nxp_simtemp_driver",
++		.of_match_table = nxp_simtemp_ids,
++	},
++};
++
++//Function called when loading the driver
++static int nxp_simtemp_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct device_node *np = dev->of_node;
++	
++	int sampling_us_dt, threshold_mC_dt, ret = 0;
++	
++	printk("nxp_simtemp: Probe function\n");
++	
++	if(!device_property_present(dev,"sampling-ms"))
++	{
++		printk("nxp_simtemp: Device property sampling-ms not found\n");
++		return -1;
++	}
++	if(!device_property_present(dev,"threshold-mC"))
++	{
++		printk("nxp_simtemp: Device property threshold-mC not found\n");
++		return -1;
++	}
++	
++	ret = of_property_read_u32(np, "sampling-ms", &sampling_us_dt);
++	if(ret)
++	{
++		printk("nxp_simtemp: Could not read samplings-ms from DT\n");
++		return ret;
++	}
++	
++	if(sampling_us_dt > TIME_MAX_us || sampling_us_dt < TIME_MIN_us)
++	{
++		printk("nxp_simtemp: samplings-ms from DT out of range\n");
++		return -EINVAL;
++	}
++	
++	sampling_us = sampling_us_dt;
++	
++	printk("nxp_simtemp: from DT sampling_us = %u\n",sampling_us);
++	
++	ret = of_property_read_s32(np, "threshold-mC", &threshold_mC_dt);
++	if(ret)
++	{
++		printk("nxp_simtemp: Could not read threshold-mC from DT\n");
++		return ret;
++	}
++	if(threshold_mC_dt > TEMP_MAX || threshold_mC_dt < TEMP_MIN)
++	{
++		printk("nxp_simtemp: threshold-mc from DT out of range\n");
++		return -EINVAL;
++	}
++	
++	threshold_mC = threshold_mC_dt;
++	
++	printk("nxp_simtemp: from DT threshold_mC = %d\n",threshold_mC);
++	
++	return 0;
++}
++
++//Function called on unloading the driver
++
++static int nxp_simtemp_remove(struct platform_device *pdev)
++{
++	printk("nxp_simtemp: Remove function\n");
++	return 0;
++}
+ 
++
++//Function called when we read the sysfs file
+ static ssize_t sampling_us_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
+ {
+ 	pr_info("nxp_simtemp: sampling_us - Read\n");
+@@ -133,16 +228,23 @@ static ssize_t sampling_us_show(struct kobject *kobj, struct kobj_attribute *att
+ static ssize_t sampling_us_store(struct kobject *kobj, struct kobj_attribute *attr, const char *buf, size_t count)
+ {
+ 	int ret = 0;
++	unsigned long flags;
++	__u32 sampling_us_temp;
++	
+ 	pr_info("nxp_simtemp: sampling_us - Write\n");
+-	mutex_lock(&sampling_us_lock);
+-	ret = sscanf(buf,"%u",&sampling_us);
+-	mutex_unlock(&sampling_us_lock);
++	ret = sscanf(buf,"%u",&sampling_us_temp);
+ 	if(ret)
+ 	{
+-		if(sampling_us > TIME_MAX_us || sampling_us < TIME_MIN_us)
++		if(sampling_us_temp > TIME_MAX_us || sampling_us_temp < TIME_MIN_us)
+ 		{
++			spin_lock_irqsave(&flags_lock,flags);
++			e_flags.l_error = E_OR_S_US;
++			spin_unlock_irqrestore(&flags_lock,flags);
+ 			return -EINVAL;
+ 		}
++		mutex_lock(&sampling_us_lock);
++		sampling_us = sampling_us_temp;
++		mutex_unlock(&sampling_us_lock);
+ 		//Cancel timer
+ 		hrtimer_cancel(&my_timer);
+ 		//Update timer
+@@ -153,6 +255,9 @@ static ssize_t sampling_us_store(struct kobject *kobj, struct kobj_attribute *at
+ 	}
+ 	else
+ 	{
++		spin_lock_irqsave(&flags_lock,flags);
++		e_flags.l_error = E_EV_S_US;
++		spin_unlock_irqrestore(&flags_lock,flags);
+ 		return -EINVAL;
+ 	}
+ }
+@@ -166,16 +271,31 @@ static ssize_t threshold_mC_show(struct kobject *kobj, struct kobj_attribute *at
+ static ssize_t threshold_mC_store(struct kobject *kobj, struct kobj_attribute *attr, const char *buf, size_t count)
+ {
+ 	int ret = 0;
++	unsigned long flags;
++	__s32 threshold_mC_temp;
++	
+ 	pr_info("nxp_simtemp: threshold_mC - Write\n");
+-	mutex_lock(&threshold_mC_lock);
+-	ret = sscanf(buf,"%d",&threshold_mC);
+-	mutex_unlock(&threshold_mC_lock);
++	ret = sscanf(buf,"%d",&threshold_mC_temp);
++	
+ 	if(ret)
+ 	{
++		if(threshold_mC_temp > TEMP_MAX || threshold_mC_temp < TEMP_MIN)
++		{
++			spin_lock_irqsave(&flags_lock,flags);
++			e_flags.l_error = E_OR_S_US;
++			spin_unlock_irqrestore(&flags_lock,flags);
++			return -EINVAL;
++		}
++		mutex_lock(&threshold_mC_lock);
++		threshold_mC = threshold_mC_temp;
++		mutex_unlock(&threshold_mC_lock);
+ 		return count;
+ 	}
+ 	else
+ 	{
++		spin_lock_irqsave(&flags_lock,flags);
++		e_flags.l_error = E_EV_TH;
++		spin_unlock_irqrestore(&flags_lock,flags);
+ 		return -EINVAL;
+ 	}
+ }
+@@ -189,8 +309,11 @@ static ssize_t mode_show(struct kobject *kobj, struct kobj_attribute *attr, char
+ static ssize_t mode_store(struct kobject *kobj, struct kobj_attribute *attr, const char *buf, size_t count)
+ {
+ 	char tmp_mode;
++	unsigned long flags;
++	
+ 	pr_info("nxp_simtemp: mode - Write\n");
+ 	sscanf(buf,"%c",&tmp_mode);
++	
+ 	switch(tmp_mode)
+ 	{
+ 		case '0':
+@@ -215,24 +338,32 @@ static ssize_t mode_store(struct kobject *kobj, struct kobj_attribute *attr, con
+ 			break;
+ 		default:
+ 			pr_info("nxp_simtemp: Invalid mode %d",mode);
++			spin_lock_irqsave(&flags_lock,flags);
++			e_flags.l_error = E_EV_MD;
++			spin_unlock_irqrestore(&flags_lock,flags);
+ 			return -EINVAL;
+ 	}
+ 	
+ 	return count;
+ }
+ 
+-static ssize_t flags_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
++static ssize_t stats_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
+ {
++	unsigned long flags;
++	int ret = 0;
++	
++	spin_lock_irqsave(&flags_lock,flags);
++	ret = sprintf(buf," Counter:\t%llu\n Alerts:\t%llu\n Last_error:\t%s\n",e_flags.counter,e_flags.alert,sim_errors[e_flags.l_error-10]);
++	spin_unlock_irqrestore(&flags_lock,flags);
++	
+ 	pr_info("nxp_simtemp: flags - Read\n");
+-	return sprintf(buf,"%u\n",flags);
++	
++	return ret; 
+ }
+ 
+-static ssize_t flags_store(struct kobject *kobj, struct kobj_attribute *attr, const char *buf, size_t count)
++static ssize_t stats_store(struct kobject *kobj, struct kobj_attribute *attr, const char *buf, size_t count)
+ {
+-	unsigned int tmp;
+-	pr_info("nxp_simtemp: flags - Write\n");
+-	sscanf(buf,"%u",&tmp);
+-	flags = (__u8)tmp;
++	pr_info("nxp_simtemp: flags - Write not available\n");
+ 	return count;
+ }
+ 
+@@ -257,13 +388,12 @@ static ssize_t nxp_simtemp_read(struct file *file, char __user *buf, size_t len,
+ 	spin_unlock_irqrestore(&fifo_lock,flags);
+ 	
+ 	copy_to_user((void __user *)buf,&current_sample,sizeof(current_sample));
+-	//pr_info("nxp_simtemp: Read function\n");
+ 	return sizeof(current_sample);
+ }
+ 
+ static ssize_t nxp_simtemp_write(struct file *file, const char *buf, size_t len, loff_t* off)
+ {
+-	pr_info("nxp_simtemp: Write function\n");
++	pr_info("nxp_simtemp: Write function not available\n");
+ 	return len;
+ }
+ 
+@@ -300,8 +430,17 @@ static enum hrtimer_restart timer_callback(struct hrtimer *timer)
+ 	}
+ 	current_sample.timestamp_ns = ktime_get_real_ns();
+ 	current_sample.flags = FLAG_NEW_SAMPLE;
++	
++	spin_lock_irqsave(&flags_lock,flags);
++	e_flags.counter += 1;
++	spin_unlock_irqrestore(&flags_lock,flags);
++	
+ 	if (current_sample.temp_mC > threshold_mC)
+ 	{
++		spin_lock_irqsave(&flags_lock,flags);
++		e_flags.alert += 1;
++		spin_unlock_irqrestore(&flags_lock,flags);
++		
+ 		current_sample.flags |= FLAG_THRESHOLD_CROSSED; 
+ 	}
+ 	
+@@ -325,9 +464,18 @@ static enum hrtimer_restart timer_callback(struct hrtimer *timer)
+ 
+ static int __init nxp_simtemp_init(void)
+ {
++	unsigned long flags;
+ 	
+-	// Init spinlock
++	// Load the driver
++	if(platform_driver_register(&nxp_simtemp_driver))
++	{
++		printk("nxp_simtemp: Error.Could not load the driver\n");
++		return -1;
++	}
++	
++	// Init spinlocks
+ 	spin_lock_init(&fifo_lock);
++	spin_lock_init(&flags_lock);
+ 	
+ 	// Set the timer interval
+ 	kt_period = ktime_set(0,sampling_us*1000); // seconds, nanoseconds
+@@ -339,6 +487,10 @@ static int __init nxp_simtemp_init(void)
+ 	//Allocate Major Number
+ 	if((alloc_chrdev_region(&dev, 0, 1,"simtemp"))<0)
+ 	{
++		spin_lock_irqsave(&flags_lock,flags);
++		e_flags.l_error = E_MN_ALLOC;
++		spin_unlock_irqrestore(&flags_lock,flags);
++		
+ 		pr_info("nxp_simtemp: Cannot allocate major number\n");
+ 		return -1;
+ 	}
+@@ -350,6 +502,10 @@ static int __init nxp_simtemp_init(void)
+ 	//Adding character device to the system
+ 	if((cdev_add(&k_cdev,dev,1)) < 0)
+ 	{
++		spin_lock_irqsave(&flags_lock,flags);
++		e_flags.l_error = E_DV_ADD;
++		spin_unlock_irqrestore(&flags_lock,flags);
++		
+ 		pr_info("nxp_simtemp: Cannot add the device to the system\n");
+ 		goto r_class;
+ 	}
+@@ -357,6 +513,10 @@ static int __init nxp_simtemp_init(void)
+ 	//Create struct class
+ 	if(IS_ERR(dev_class = class_create(THIS_MODULE,"simtemp")))
+ 	{
++		spin_lock_irqsave(&flags_lock,flags);
++		e_flags.l_error = E_CL_CREATE;
++		spin_unlock_irqrestore(&flags_lock,flags);
++		
+ 		pr_info("nxp_simtemp: Cannot create the struct class\n");
+ 		goto r_class;
+ 	}
+@@ -364,6 +524,10 @@ static int __init nxp_simtemp_init(void)
+ 	//Create device
+ 	if(IS_ERR(device_create(dev_class,NULL,dev,NULL,"simtemp")))
+ 	{
++		spin_lock_irqsave(&flags_lock,flags);
++		e_flags.l_error = E_DV_CREATE;
++		spin_unlock_irqrestore(&flags_lock,flags);
++		
+ 		pr_info("nxp_simtemp: Cannot create the Device 1\n");
+ 		goto r_device;
+ 		
+@@ -373,6 +537,10 @@ static int __init nxp_simtemp_init(void)
+ 	kobj_ref = kobject_create_and_add("simtemp",kernel_kobj);
+ 	if(!kobj_ref)
+ 	{
++		spin_lock_irqsave(&flags_lock,flags);
++		e_flags.l_error = E_KO_CREATE;
++		spin_unlock_irqrestore(&flags_lock,flags);
++		
+ 		pr_err("Cannot create kobject\n");
+ 		return -ENOMEM;
+ 	}
+@@ -380,6 +548,10 @@ static int __init nxp_simtemp_init(void)
+ 	//Create sysfs file for k_value
+ 	if(sysfs_create_group(kobj_ref,&attr_group))
+ 	{
++		spin_lock_irqsave(&flags_lock,flags);
++		e_flags.l_error = E_SYS_CREATE;
++		spin_unlock_irqrestore(&flags_lock,flags);
++		
+ 		pr_err("Cannot create sysfs group\n");
+ 		goto r_sysfs;			
+ 	}
+@@ -429,6 +601,7 @@ static void __exit nxp_simtemp_exit(void)
+ 	class_destroy(dev_class);
+ 	cdev_del(&k_cdev);
+ 	unregister_chrdev_region(dev,1);
++	platform_driver_unregister(&nxp_simtemp_driver);
+ 	pr_info("nxp_simtemp: Device Driver Remove Done\n");
+ }
+ 
+diff --git a/drivers/char/nxp_simtemp_driver/simtemp.h b/drivers/char/nxp_simtemp_driver/simtemp.h
+index 6e7dfcb..25c36b5 100644
+--- a/drivers/char/nxp_simtemp_driver/simtemp.h
++++ b/drivers/char/nxp_simtemp_driver/simtemp.h
+@@ -3,10 +3,46 @@
+ 
+ #include <linux/types.h>
+ 
++#define E_NO_ERR		10
++#define E_EV_S_US		11
++#define E_OR_S_US		12
++#define E_EV_TH			13
++#define E_EV_MD			14
++#define E_MN_ALLOC		15
++#define E_DV_ADD		16
++#define E_CL_CREATE		17
++#define E_DV_CREATE		18
++#define E_KO_CREATE		19
++#define E_SYS_CREATE	20
++
++const char * sim_errors[] = { "NO_ERROR",
++	"EINVAL_sampling_us",
++	"OUTOFRANGE_sampling_us",
++	"EINVAL_threshold_mC",
++	"EINVAL_mode",
++	"MAJORNUM_alloc",
++	"ADD_device",
++	"CREATE_class",
++	"CREATE_device",
++	"CREATE_kobject",
++	"CREATE_kobject"
++};
++	
++	
++	
++	
++
+ struct simtemp_sample {
+ 	__u64 timestamp_ns; //monotonic timestamp
+ 	__s32 temp_mC;		//milli-degree Celsius
+ 	__u32 flags;		//
+ }__attribute__((packed));
+ 
++struct simtemp_flags {
++	__u64 counter;		//number of samples since insmod
++	__u64 alert;		//number of alerts since insmod
++	__u8 l_error;		//last error
++}__attribute__((packed));
++
++
+ #endif
+-- 
+2.7.4
+
